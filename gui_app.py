@@ -5,9 +5,43 @@ import csv
 import os
 import subprocess
 import time
+from pathlib import Path
 
 from generator import DataGenerator
 from external_sort import ExternalSort
+
+LAB5_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = LAB5_DIR.parent
+CPP_SRC = LAB5_DIR / "external_sort.cpp"
+
+
+def _find_gxx() -> str:
+    """g++ из PATH или портативный MinGW в _tools/mingw64."""
+    for name in ("g++", "g++.exe"):
+        p = Path(name)
+        if p.is_file():
+            return str(p.resolve())
+        for d in os.environ.get("PATH", "").split(os.pathsep):
+            cand = Path(d) / name
+            if cand.is_file():
+                return str(cand)
+    bundled = PROJECT_DIR / "_tools" / "mingw64" / "bin" / "g++.exe"
+    if bundled.is_file():
+        return str(bundled)
+    for root in (Path(r"C:\msys64\mingw64\bin"), Path(r"C:\MinGW\bin")):
+        cand = root / "g++.exe"
+        if cand.is_file():
+            return str(cand)
+    raise FileNotFoundError(
+        "Компилятор g++ не найден. Установите MinGW или положите mingw64 в _tools/"
+    )
+
+
+def _subprocess_env(gxx: str) -> dict:
+    env = os.environ.copy()
+    bin_dir = str(Path(gxx).resolve().parent)
+    env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+    return env
 
 class App:
     def __init__(self):
@@ -304,8 +338,11 @@ class App:
 
         def work():
             try:
-                if not os.path.exists(inp):
-                    raise Exception(f"Файл не найден: {inp}")
+                inp_path = Path(inp)
+                if not inp_path.is_absolute():
+                    inp_path = LAB5_DIR / inp
+                if not inp_path.is_file():
+                    raise Exception(f"Файл не найден: {inp_path}")
 
                 self.log(self.sort_log, f"Язык: {lang}")
                 self.log(self.sort_log, f"Столбец: {selected_col_name} (Индекс: {col_index}), {order_text}")
@@ -321,13 +358,24 @@ class App:
                         if hasattr(sorter, 'cleanup'): sorter.cleanup()
 
                 else:
-                    self.log(self.sort_log, "Компиляция C++...")
+                    if not CPP_SRC.is_file():
+                        raise FileNotFoundError(f"Не найден исходник: {CPP_SRC}")
 
-                    exe_name = f"external_sort_{int(time.time())}.exe" if os.name == "nt" else f"external_sort_{int(time.time())}"
+                    gxx = _find_gxx()
+                    env = _subprocess_env(gxx)
+                    self.log(self.sort_log, f"Компиляция C++ ({Path(gxx).name})...")
+
+                    exe_path = LAB5_DIR / f"external_sort_{int(time.time())}.exe"
 
                     r = subprocess.run(
-                        ['g++', '-std=c++17', '-O2', 'external_sort.cpp', '-o', exe_name],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore'
+                        [gxx, "-std=c++17", "-O2", str(CPP_SRC), "-o", str(exe_path)],
+                        cwd=str(LAB5_DIR),
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="ignore",
                     )
 
                     if r.returncode != 0:
@@ -336,17 +384,29 @@ class App:
 
                     self.log(self.sort_log, "Запуск программы...")
 
-                    exe_run_cmd = f".\\{exe_name}" if os.name == "nt" else f"./{exe_name}"
+                    inp_abs = str(Path(inp).resolve()) if not os.path.isabs(inp) else inp
+                    out_abs = str(Path(out).resolve()) if not os.path.isabs(out) else out
+                    if not os.path.isabs(inp):
+                        cand = LAB5_DIR / inp
+                        if cand.is_file():
+                            inp_abs = str(cand.resolve())
+                    if not os.path.isabs(out):
+                        out_abs = str((LAB5_DIR / out).resolve())
 
                     r2 = subprocess.run(
-                        [exe_run_cmd, inp, out, str(col_index), "1" if is_desc else "0"],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore'
+                        [str(exe_path), inp_abs, out_abs, str(col_index), "1" if is_desc else "0"],
+                        cwd=str(LAB5_DIR),
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="ignore",
                     )
 
                     try:
-                        if os.path.exists(exe_name):
-                            os.remove(exe_name)
-                    except:
+                        exe_path.unlink(missing_ok=True)
+                    except OSError:
                         pass
 
                     out_str = r2.stdout if r2.stdout else ""
